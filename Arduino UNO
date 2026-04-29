@@ -1,0 +1,95 @@
+// --- Configuración de Pines ---
+const int ENA = 11; 
+const int IN1 = 9;  
+const int IN2 = 10; 
+const int ENCODER_A = 2; 
+const int ENCODER_B = 3; 
+
+// --- Parámetros del Motor ---
+const float PULSOS_POR_VUELTA = 700.0; // Ajuste para tu encoder
+const int velocidad = 200; 
+
+// --- Variables de Control y Tiempos ---
+volatile long contadorPulsos = 0; 
+long pulsosAnteriores = 0;
+unsigned long tiempoAnterior = 0;
+
+void setup() {
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  
+  pinMode(ENCODER_A, INPUT_PULLUP);
+  pinMode(ENCODER_B, INPUT_PULLUP);
+  
+  // La interrupción lee los cambios en el pin A
+  attachInterrupt(digitalPinToInterrupt(ENCODER_A), manejarEncoder, RISING);
+
+  // IMPORTANTE: Mantenemos la velocidad a 9600 para que coincida con Python
+  Serial.begin(9600); 
+}
+
+void loop() {
+  // 1. Control básico del motor vía comandos
+  if (Serial.available() > 0) {
+    char comando = Serial.read();
+    if (comando == '1') girarDerecha();
+    else if (comando == '2') girarIzquierda();
+    else if (comando == '0') detenerMotor();
+  }
+
+  // 2. Cálculo matemático preciso de RPM Reales cada ~100 ms
+  unsigned long tiempoActual = millis();
+  unsigned long deltaTiempo = tiempoActual - tiempoAnterior;
+
+  // Calculamos si han pasado al menos 100ms
+  if (deltaTiempo >= 100) {
+    
+    // Bloquear interrupciones brevemente para copiar la variable de forma segura
+    noInterrupts();
+    long pulsosActuales = contadorPulsos;
+    interrupts();
+
+    // Calcular la diferencia de pulsos (Delta Pulsos)
+    long deltaPulsos = pulsosActuales - pulsosAnteriores;
+    
+    // Aplicamos la fórmula de RPM usando el tiempo real transcurrido
+    // 60000.0 son los milisegundos que hay en un minuto
+    float rpmReales = (abs(deltaPulsos) / PULSOS_POR_VUELTA) * (60000.0 / deltaTiempo);
+
+    // Enviar solo el valor numérico al puerto serie (sin texto extra)
+    // El '2' al final indica que enviaremos el número con 2 decimales para mayor precisión
+    Serial.println(rpmReales, 2); 
+
+    // Guardar los valores actuales para el siguiente cálculo
+    pulsosAnteriores = pulsosActuales;
+    tiempoAnterior = tiempoActual;
+  }
+}
+
+// Lógica de cuadratura para saber la dirección
+void manejarEncoder() {
+  if (digitalRead(ENCODER_A) == digitalRead(ENCODER_B)) {
+    contadorPulsos++;
+  } else {
+    contadorPulsos--;
+  }
+}
+
+void girarDerecha() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, velocidad);
+}
+
+void girarIzquierda() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  analogWrite(ENA, velocidad);
+}
+
+void detenerMotor() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  analogWrite(ENA, 0);
+}
