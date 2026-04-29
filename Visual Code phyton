@@ -1,0 +1,166 @@
+import customtkinter as ctk
+import serial
+import threading
+import time
+
+# --- CONFIGURACIÓN DE APARIENCIA ---
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+class PanelControlMotor(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # Configuración de ventana
+        self.title("Panel de Control y Monitor de RPM")
+        self.geometry("650x750") # Ventana un poco más alta para los botones
+
+        # --- CONFIGURACIÓN SERIAL ---
+        # Asegúrate de poner el puerto correcto (ej. COM3, COM4)
+        self.puerto_serial = 'COM3' 
+        try:
+            self.arduino = serial.Serial(self.puerto_serial, 9600, timeout=0.1)
+            self.conectado = True
+        except Exception as e:
+            print(f"Error de conexión en {self.puerto_serial}: {e}")
+            self.conectado = False
+
+        # --- VARIABLES DE DATOS ---
+        self.rpm_referencia = 70.0
+        self.rpm_medida = 0.0
+
+        self.crear_interfaz()
+        
+        # Iniciar lectura de datos del Arduino en segundo plano
+        if self.conectado:
+            self.hilo_lectura = threading.Thread(target=self.leer_serial, daemon=True)
+            self.hilo_lectura.start()
+
+    def crear_interfaz(self):
+        self.lbl_titulo = ctk.CTkLabel(self, text="PANEL DE CONTROL DE MOTOR", 
+                                      font=("Arial", 22, "bold"), text_color="#00D4FF")
+        self.lbl_titulo.pack(pady=15)
+
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.pack(padx=20, pady=5, fill="both", expand=True)
+
+        # ==========================================
+        # 1. SECCIÓN DE CONTROL MANUAL (BOTONES)
+        # ==========================================
+        self.frame_botones = ctk.CTkFrame(self.main_frame)
+        self.frame_botones.pack(pady=10, fill="x", ipady=10)
+        
+        ctk.CTkLabel(self.frame_botones, text="CONTROL DEL MOTOR", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Contenedor interno para alinear los botones
+        self.btn_container = ctk.CTkFrame(self.frame_botones, fg_color="transparent")
+        self.btn_container.pack()
+
+        # Botón Encendido/Derecha (Envía '1')
+        self.btn_encender = ctk.CTkButton(self.btn_container, text="Encender / Derecha", fg_color="#00AA00", hover_color="#008800",
+                                          command=lambda: self.enviar_comando('1'))
+        self.btn_encender.grid(row=0, column=0, padx=10, pady=5)
+
+        # Botón Izquierda (Envía '2')
+        self.btn_izq = ctk.CTkButton(self.btn_container, text="Girar Izquierda", fg_color="#AA5500", hover_color="#884400",
+                                     command=lambda: self.enviar_comando('2'))
+        self.btn_izq.grid(row=0, column=1, padx=10, pady=5)
+
+        # Botón Apagado (Envía '0')
+        self.btn_apagar = ctk.CTkButton(self.btn_container, text="Apagar Motor", fg_color="#AA0000", hover_color="#880000",
+                                        command=lambda: self.enviar_comando('0'))
+        self.btn_apagar.grid(row=0, column=2, padx=10, pady=5)
+
+        # ==========================================
+        # 2. SECCIÓN: ESTABLECER REFERENCIA
+        # ==========================================
+        self.frame_ref = ctk.CTkFrame(self.main_frame)
+        self.frame_ref.pack(pady=10, fill="x")
+        
+        ctk.CTkLabel(self.frame_ref, text="RPM DE REFERENCIA", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        self.entrada_ref = ctk.CTkEntry(self.frame_ref, font=("Arial", 20), width=150, justify="center")
+        self.entrada_ref.insert(0, str(self.rpm_referencia))
+        self.entrada_ref.pack(pady=5)
+        
+        self.btn_actualizar = ctk.CTkButton(self.frame_ref, text="Fijar Referencia", command=self.actualizar_referencia)
+        self.btn_actualizar.pack(pady=10)
+
+        # ==========================================
+        # 3. SECCIÓN: RPM REALES (LECTURA DE ARDUINO)
+        # ==========================================
+        self.frame_med = ctk.CTkFrame(self.main_frame, border_width=2, border_color="#FF00FF")
+        self.frame_med.pack(pady=10, fill="x")
+        
+        ctk.CTkLabel(self.frame_med, text="RPM ACTUALES", font=("Arial", 14, "bold")).pack(pady=5)
+        self.lbl_med_num = ctk.CTkLabel(self.frame_med, text="0.00", font=("Arial", 40, "bold"), text_color="#FF00FF")
+        self.lbl_med_num.pack(pady=10)
+
+        self.lbl_error_txt = ctk.CTkLabel(self.main_frame, text="Error absoluto: 0.00 RPM", font=("Arial", 16))
+        self.lbl_error_txt.pack(pady=5)
+
+        # ==========================================
+        # 4. SECCIÓN: SEMÁFORO VISUAL
+        # ==========================================
+        self.frame_luces = ctk.CTkFrame(self.main_frame, fg_color="#101010", corner_radius=20)
+        self.frame_luces.pack(pady=15, padx=50, fill="x")
+
+        self.luz_verde = self.crear_luz(self.frame_luces, 0, "Error < 10")
+        self.luz_amarilla = self.crear_luz(self.frame_luces, 1, "Error 10 - 15")
+        self.luz_roja = self.crear_luz(self.frame_luces, 2, "Error > 15")
+
+    def crear_luz(self, master, col, texto):
+        f = ctk.CTkFrame(master, width=70, height=70, corner_radius=35, fg_color="#202020")
+        f.grid(row=0, column=col, padx=25, pady=15)
+        ctk.CTkLabel(master, text=texto, font=("Arial", 12, "bold")).grid(row=1, column=col, pady=(0,5))
+        return f
+
+    # --- FUNCIONES DE COMUNICACIÓN Y LÓGICA ---
+
+    def enviar_comando(self, comando):
+        """Envía el caracter seleccionado al Arduino."""
+        if self.conectado:
+            # Se convierte a bytes ('1' -> b'1') y se envía
+            self.arduino.write(comando.encode('utf-8'))
+
+    def actualizar_referencia(self):
+        try:
+            nuevo_valor = float(self.entrada_ref.get())
+            self.rpm_referencia = nuevo_valor
+            self.actualizar_ui()
+        except ValueError:
+            pass
+
+    def leer_serial(self):
+        while self.conectado:
+            if self.arduino.in_waiting > 0:
+                try:
+                    linea = self.arduino.readline().decode('utf-8').strip()
+                    self.rpm_medida = float(linea)
+                    self.actualizar_ui()
+                except ValueError:
+                    pass
+            time.sleep(0.05)
+
+    def actualizar_ui(self):
+        error_abs = abs(self.rpm_referencia - self.rpm_medida)
+
+        self.lbl_med_num.configure(text=f"{self.rpm_medida:.2f}")
+        self.lbl_error_txt.configure(text=f"Error absoluto: {error_abs:.2f} RPM")
+
+        # Apagar luces
+        self.luz_verde.configure(fg_color="#202020")
+        self.luz_amarilla.configure(fg_color="#202020")
+        self.luz_roja.configure(fg_color="#202020")
+
+        # Encender la luz correspondiente según las reglas
+        if error_abs < 10.0:
+            self.luz_verde.configure(fg_color="#00FF00")     # Verde
+        elif 10.0 <= error_abs <= 15.0:
+            self.luz_amarilla.configure(fg_color="#FFFF00")  # Amarillo
+        else:
+            self.luz_roja.configure(fg_color="#FF0000")      # Rojo
+
+if __name__ == "__main__":
+    app = PanelControlMotor()
+    app.mainloop()
